@@ -1,4 +1,3 @@
-import java.net.URL
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -15,6 +14,12 @@ repositories {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
+    implementation("org.opendaylight.yangtools:yang-model-api:3.0.0")
+    implementation("org.opendaylight.yangtools:yang-model-export:3.0.0")
+    implementation("org.opendaylight.yangtools:yang-model-util:3.0.0")
+    implementation("org.opendaylight.yangtools:yang-parser-api:3.0.0")
+    implementation("org.opendaylight.yangtools:yang-parser-impl:3.0.0")
+    implementation("org.slf4j:slf4j-api:1.8.0-beta4")
 }
 
 tasks.withType<KotlinCompile> {
