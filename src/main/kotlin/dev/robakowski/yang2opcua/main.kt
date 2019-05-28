@@ -3,8 +3,7 @@
 package dev.robakowski.yang2opcua
 
 import org.opcfoundation.ua.modeldesign.ModelDesign
-import org.opendaylight.yangtools.yang.model.api.EffectiveModelContext
-import org.opendaylight.yangtools.yang.model.parser.api.YangParserFactory
+import org.opendaylight.yangtools.yang.model.api.stmt.ModuleEffectiveStatement
 import org.opendaylight.yangtools.yang.model.parser.api.YangSyntaxErrorException
 import org.opendaylight.yangtools.yang.model.repo.api.YangTextSchemaSource
 import org.opendaylight.yangtools.yang.parser.impl.YangParserFactoryImpl
@@ -38,8 +37,13 @@ fun main() {
         }
     }
 
-//    val declaredModel = parser.buildDeclaredModel()
-    val model = parser.buildEffectiveModel()
+    val yangModel = parser.buildEffectiveModel()
+    val opcuaModel = ModelDesign()
+
+    yangModel.moduleStatements.forEach { (moduleName, module) ->
+        println("processing module $moduleName")
+        opcuaModel.addYangModule(module)
+    }
 
     val opcuaAnimalExampleModel = modelDesign {
         targetNamespace = "https://opcua.rocks/UA/animal/"
@@ -71,8 +75,18 @@ fun main() {
         }
     }
 
-    val ctxt = JAXBContext.newInstance(ModelDesign::class.java)
-    val marshaler = ctxt.createMarshaller().apply { setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true) }
+    val context = JAXBContext.newInstance(ModelDesign::class.java)
+    val marshaller = context.createMarshaller().apply { setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true) }
 
-    marshaler.marshal(opcuaAnimalExampleModel, System.out)
+    marshaller.marshal(opcuaAnimalExampleModel, System.out)
+}
+
+fun ModelDesign.addYangModule(yangModule: ModuleEffectiveStatement) {
+    namespaces {
+        namespace {
+            name = yangModule.localQNameModule().toString()
+        }
+    }
+
+    TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
 }

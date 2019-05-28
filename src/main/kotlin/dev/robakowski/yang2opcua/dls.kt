@@ -13,7 +13,7 @@ fun Instant.toXmlCalendar() =
     XMLGregorianCalendarImpl(GregorianCalendar().apply { timeInMillis = this@toXmlCalendar.toEpochMilli() })
 
 fun ModelDesign.namespaces(block: NamespaceTable.() -> Unit) {
-    this.namespaces = NamespaceTable().apply(block)
+    this.namespaces = (this.namespaces ?: NamespaceTable()).apply(block)
 }
 
 fun NamespaceTable.namespace(block: Namespace.() -> Unit) {
