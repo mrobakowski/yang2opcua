@@ -63,11 +63,11 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
                 is DescriptionEffectiveStatement -> ignoredForNow
                 is RevisionEffectiveStatement -> ignoredForNow
                 is FeatureEffectiveStatement -> ignoredForNow
-                is IdentityEffectiveStatement -> addIdentityType(it)
-                is ContainerEffectiveStatement -> addContainer(it)
-                is TypedefEffectiveStatement -> addTypedef(it)
                 is ReferenceEffectiveStatement -> ignoredForNow
                 is YangVersionEffectiveStatement -> ignoredForNow
+                is IdentityEffectiveStatement -> addIdentityType(it)
+                is ContainerEffectiveStatement -> addContainerObjectType(it)
+                is TypedefEffectiveStatement -> addTypedef(it)
 
                 // we process effective models, so this should already be inlined
                 is GroupingEffectiveStatement -> ignoredForNow
@@ -88,6 +88,48 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
     fun SchemaNode.getSymbolicName(suffix: String = ""): JQName =
         JQName(qName.namespace.toString(), path.pathFromRoot.joinToString("/") { it.localName } + suffix)
 
+    fun getDataType(type: TypeDefinition<*>): JQName {
+        if (type.baseType == null) {
+            return translatePrimitiveType(type) ?: error("unknown primitive type [${type.javaClass.simpleName}]")
+        }
+
+        val symbolicName = type.getSymbolicName()
+
+        // TODO: create types on demand and cache them
+
+        return symbolicName
+    }
+
+    fun translatePrimitiveType(type: TypeDefinition<*>): JQName? {
+        return when (type) {
+            is StringTypeDefinition -> "String"
+            is BinaryTypeDefinition -> "ByteString"
+            is BitsTypeDefinition -> "UInt32"
+            is BooleanTypeDefinition -> "Boolean"
+            is DecimalTypeDefinition -> "Int64"
+            is EmptyTypeDefinition -> "Structure"
+            is EnumTypeDefinition -> "EnumeratedType"
+            is IdentityrefTypeDefinition -> "NodeId" // TODO identityrefs should probably be implemented as references, not data types
+            is IdentityTypeDefinition -> TODO("I think this is impossible?")
+            is InstanceIdentifierTypeDefinition -> "ExpandedNodeId" // TODO: is this correct???
+
+            is Int8TypeDefinition -> "SByte"
+            is Int16TypeDefinition -> "Int16"
+            is Int32TypeDefinition -> "Int32"
+            is Int64TypeDefinition -> "Int64"
+
+            is Uint8TypeDefinition -> "Byte"
+            is Uint16TypeDefinition -> "UInt16"
+            is Uint32TypeDefinition -> "UInt32"
+            is Uint64TypeDefinition -> "UInt64"
+
+            is LeafrefTypeDefinition -> "NodeId" // TODO: is this correct???
+            is UnionTypeDefinition -> "Variant" // TODO: can we somehow further restrict this?
+
+            else -> null
+        }?.let(::opcuaRef)
+    }
+
     fun opcuaRef(ref: String) = JQName(OPC_UA_BASE_URI, ref)
 
     /** Adds a primitive typedef */
@@ -96,46 +138,21 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             symbolicName = typedef.typeDefinition.getSymbolicName()
             copyDescription(typedef as DocumentedNode)
 
-            val base = typedef.asTypeEffectiveStatement().typeDefinition.baseType
-            baseType = when (base) {
-                is StringTypeDefinition -> "String"
-                is BinaryTypeDefinition -> "ByteString"
-                is BitsTypeDefinition -> "UInt32"
-                is BooleanTypeDefinition -> "Boolean"
-                is DecimalTypeDefinition -> "Int64"
-                is EmptyTypeDefinition -> "Structure"
-                is EnumTypeDefinition -> {
-                    fields = ListOfFields().apply {
-                        base.values.forEach {
-                            field += Parameter().apply {
-                                copyDescription(it)
-                                name = it.name
-                                identifier = it.value
-                            }
+            val base = typedef.typeDefinition.baseType
+            baseType = translatePrimitiveType(base) ?:
+                    error("typedef with base type [${base.javaClass.simpleName}] not supported")
+
+            if (base is EnumTypeDefinition) {
+                fields = ListOfFields().apply {
+                    base.values.forEach {
+                        field += Parameter().apply {
+                            copyDescription(it)
+                            name = it.name
+                            identifier = it.value
                         }
                     }
-
-                    "EnumeratedType"
                 }
-                is IdentityrefTypeDefinition -> "NodeId" // TODO identityrefs should probably be implemented as references, not data types
-                is IdentityTypeDefinition -> TODO("I think this is impossible?")
-                is InstanceIdentifierTypeDefinition -> "ExpandedNodeId" // TODO: is this correct???
-
-                is Int8TypeDefinition -> "SByte"
-                is Int16TypeDefinition -> "Int16"
-                is Int32TypeDefinition -> "Int32"
-                is Int64TypeDefinition -> "Int64"
-
-                is Uint8TypeDefinition -> "Byte"
-                is Uint16TypeDefinition -> "UInt16"
-                is Uint32TypeDefinition -> "UInt32"
-                is Uint64TypeDefinition -> "UInt64"
-
-                is LeafrefTypeDefinition -> "NodeId" // TODO: is this correct???
-                is UnionTypeDefinition -> "Variant" // TODO: can we somehow further restrict this?
-
-                else -> error("typedef with base type [${base.javaClass.simpleName}] not supported")
-            }.let(::opcuaRef)
+            }
         }
     }
 
@@ -154,28 +171,38 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         }
     }
 
-    fun addContainer(container: ContainerEffectiveStatement) {
-        container as ContainerSchemaNode
-
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += ObjectTypeDesign().apply {
-            symbolicName = container.getSymbolicName()
-            copyDescription(container)
-            baseType = opcuaRef("BaseObjectType")
-
-            children = makeChildren(container.effectiveSubstatements())
-        }
-    }
-
     fun ObjectTypeDesign.makeChildren(yangChildren: Collection<EffectiveStatement<*, *>>): ListOfChildren {
         return ListOfChildren().apply {
-            yangChildren.forEach {
-                when (it) {
-                    is DescriptionEffectiveStatement -> ignoredForNow // handled one level above
-                    is ReferenceEffectiveStatement -> ignoredForNow // TODO: maybe add to the description?
+            yangChildren.forEach { child ->
+                when (child) {
                     is ConfigEffectiveStatement -> ignoredForNow
                     is StatusEffectiveStatement -> ignoredForNow
-                    is KeyEffectiveStatement -> ignoredForNow // should be handled in ListEffectiveStatement below
-                    is UniqueEffectiveStatement -> ignoredForNow // TODO
+
+                    // TODO: add feature processing (this should be probably implemented somewhere in opendaylight
+                    //  already for effective statements)
+                    is IfFeatureEffectiveStatement -> ignoredForNow
+
+                    // we process effective models, so this should already be inlined
+                    is UsesEffectiveStatement -> ignoredForNow
+
+                    // TODO: are such schema conditionals supported in opcua?
+                    is WhenEffectiveStatement -> ignoredForNow
+
+                    // TODO: maybe add to the description?
+                    is ReferenceEffectiveStatement -> ignoredForNow
+
+                    // handled one level above
+                    is DescriptionEffectiveStatement -> ignoredForNow
+
+                    // TODO: are such constraints even supported in opcua?
+                    is UniqueEffectiveStatement -> ignoredForNow
+
+                    // we process effective models, so this should already be inlined
+                    is AugmentEffectiveStatement -> ignoredForNow
+
+                    // should be handled in ListEffectiveStatement below
+                    is KeyEffectiveStatement -> ignoredForNow
+
                     is ListEffectiveStatement -> {
                         // so, the mapping from yang lists goes like this
                         // 1) create an object type for the list object
@@ -184,81 +211,108 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
                         // 4) add the list object of type from 1) to the current type design
                         // TODO: validate if this is a correct encoding
 
-                        it as ListSchemaNode
-                        val listType = addListObjectType(it)
-                        val elementType = addListElementObjectType(it)
-                        val referenceType = addListElementReferenceType(it)
+                        child as ListSchemaNode
+                        val listType = addListObjectType(child)
+                        val elementType = addListElementObjectType(child)
+                        val referenceType = addListElementReferenceType(child)
                         objectOrVariableOrProperty += ObjectDesign().apply {
-                            symbolicName = it.getSymbolicName()
-                            copyDescription(it)
+                            symbolicName = child.getSymbolicName()
+                            copyDescription(child)
                             description.value += "\n\telement type: ${elementType.symbolicName}" +
                                     "\n\treference type: ${referenceType.symbolicName}" +
-                                    "\n\telement key: ${it.keyDefinition.joinToString()}"
+                                    "\n\telement key: ${child.keyDefinition.joinToString()}"
                             typeDefinition = listType.symbolicName
                         }
                     }
                     is LeafEffectiveStatement -> {
-                        it as LeafSchemaNode
-                        val leafType = addLeafType(it)
+                        child as LeafSchemaNode
+                        val leafType = addLeafType(child)
 
                         objectOrVariableOrProperty += VariableDesign().apply {
-                            symbolicName = it.getSymbolicName()
-                            copyDescription(it)
+                            symbolicName = child.getSymbolicName()
+                            copyDescription(child)
                             valueRank = ValueRank.SCALAR
                             typeDefinition = leafType.symbolicName
                         }
                     }
                     is LeafListEffectiveStatement -> {
-                        it as LeafListSchemaNode
-                        val leafListType = addLeafListType(it)
+                        child as LeafListSchemaNode
+                        val leafListType = addLeafListType(child)
 
                         objectOrVariableOrProperty += VariableDesign().apply {
-                            symbolicName = it.getSymbolicName()
-                            copyDescription(it)
+                            symbolicName = child.getSymbolicName()
+                            copyDescription(child)
                             valueRank = ValueRank.ARRAY
                             typeDefinition = leafListType.symbolicName
                         }
                     }
                     is ContainerEffectiveStatement -> {
-                        // TODO: genericize the module treatment of containers so nested containers work
+                        child as ContainerSchemaNode
+                        val containerType = addContainerObjectType(child)
+                        objectOrVariableOrProperty += ObjectDesign().apply {
+                            symbolicName = child.getSymbolicName()
+                            copyDescription(child)
+                            typeDefinition = containerType.symbolicName
+                        }
                     }
-                    // we process effective models, so this should already be inlined
-                    is AugmentEffectiveStatement -> ignoredForNow
-                    else -> TODO("container child of type [${it.javaClass.simpleName.ifEmpty { it.javaClass.name }}] not supported")
+                    is ChoiceEffectiveStatement -> {
+                        // I guess we can implement it as an abstract base class and a concrete class for each of the cases
+                        child as ChoiceSchemaNode
+                        val choiceType = addChoiceObjectType(child)
+                        objectOrVariableOrProperty += ObjectDesign().apply {
+                            symbolicName = child.getSymbolicName()
+                            copyDescription(child)
+                            typeDefinition = choiceType.symbolicName
+                        }
+                    }
+                    else -> TODO("container child of type [${child.javaClass.simpleName.ifEmpty { child.javaClass.name }}] not supported")
                 }
             }
         }
     }
 
-    fun addListObjectType(les: ListEffectiveStatement): ObjectTypeDesign {
-        les as ListSchemaNode
+    fun addContainerObjectType(container: ContainerEffectiveStatement): ObjectTypeDesign {
+        container as ContainerSchemaNode
+        val res =  ObjectTypeDesign().apply {
+            symbolicName = container.getSymbolicName("ContainerType")
+            copyDescription(container)
+            baseType = opcuaRef("BaseObjectType")
+
+            children = makeChildren(container.effectiveSubstatements())
+        }
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        return res
+    }
+
+    fun addListObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
+        list as ListSchemaNode
         val res = ObjectTypeDesign().apply {
-            symbolicName = les.getSymbolicName("ListType")
-            copyDescription(les)
+            symbolicName = list.getSymbolicName("ListType")
+            copyDescription(list)
             baseType = opcuaRef("BaseObjectType")
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
-    fun addListElementObjectType(les: ListEffectiveStatement): ObjectTypeDesign {
-        les as ListSchemaNode
+    fun addListElementObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
+        list as ListSchemaNode
         val res = ObjectTypeDesign().apply {
-            symbolicName = les.getSymbolicName("ListElementType")
-            copyDescription(les)
+            symbolicName = list.getSymbolicName("ListElementType")
+            copyDescription(list)
             baseType = opcuaRef("BaseObjectType")
 
-            children = makeChildren(les.effectiveSubstatements())
+            children = makeChildren(list.effectiveSubstatements())
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
-    fun addListElementReferenceType(les: ListEffectiveStatement): ReferenceTypeDesign {
-        les as ListSchemaNode
+    fun addListElementReferenceType(list: ListEffectiveStatement): ReferenceTypeDesign {
+        list as ListSchemaNode
         val res = ReferenceTypeDesign().apply {
-            symbolicName = les.getSymbolicName("ListElementReferenceType")
-            copyDescription(les)
+            symbolicName = list.getSymbolicName("ListElementReferenceType")
+            copyDescription(list)
             baseType = opcuaRef("HasComponent") // TODO: or maybe `Aggregates`?
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
@@ -272,21 +326,50 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             copyDescription(leaf)
             valueRank = ValueRank.SCALAR
             baseType = opcuaRef("BaseDataVariableType")
-            dataType = leaf.type.getSymbolicName()
+            dataType = getDataType(leaf.type)
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
-    fun addLeafListType(leaf: LeafListEffectiveStatement): VariableTypeDesign {
-        leaf as LeafListSchemaNode
+    fun addLeafListType(leafList: LeafListEffectiveStatement): VariableTypeDesign {
+        leafList as LeafListSchemaNode
         val res = VariableTypeDesign().apply {
-            symbolicName = leaf.getSymbolicName("LeafType")
-            copyDescription(leaf)
+            symbolicName = leafList.getSymbolicName("LeafType")
+            copyDescription(leafList)
             valueRank = ValueRank.ARRAY
             baseType = opcuaRef("BaseDataVariableType")
-            dataType = leaf.type.getSymbolicName()
+            dataType = getDataType(leafList.type)
         }
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        return res
+    }
+
+    fun addChoiceObjectType(choice: ChoiceEffectiveStatement): ObjectTypeDesign {
+        choice as ChoiceSchemaNode
+        val choiceType = ObjectTypeDesign().apply {
+            symbolicName = choice.getSymbolicName("ChoiceType")
+            isIsAbstract = true
+            copyDescription(choice)
+            baseType = opcuaRef("BaseObjectType")
+        }
+
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += choiceType
+        choice.cases.forEach { (_, caseNode) -> addCaseObjectType(caseNode, choiceType.symbolicName) }
+
+        return choiceType
+    }
+
+    fun addCaseObjectType(case: CaseSchemaNode, choiceType: JQName): ObjectTypeDesign {
+        case as CaseEffectiveStatement
+        val res = ObjectTypeDesign().apply {
+            symbolicName = case.getSymbolicName("CaseType")
+            copyDescription(case)
+            baseType = choiceType
+
+            children = makeChildren(case.effectiveSubstatements())
+        }
+
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
