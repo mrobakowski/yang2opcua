@@ -136,9 +136,9 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         return when (type) {
             is StringTypeDefinition -> "String"
             is BinaryTypeDefinition -> "ByteString"
-            is BitsTypeDefinition -> "UInt32"
+            is BitsTypeDefinition -> "UInt32" // TODO: bit flags?
             is BooleanTypeDefinition -> "Boolean"
-            is DecimalTypeDefinition -> "Int64"
+            is DecimalTypeDefinition -> "Int64" // TODO: precision?
             is EmptyTypeDefinition -> "Structure"
             is EnumTypeDefinition -> "EnumeratedType"
             is IdentityrefTypeDefinition -> "NodeId" // TODO identityrefs should probably be implemented as references, not data types
