@@ -14,12 +14,23 @@ import javax.xml.bind.Marshaller
 
 fun main() {
     val mainFile = YangTextSchemaSource.forFile(File("./yang/experimental/ieee/802.1/ieee802-dot1q-psfp.yang"))
+    val dateRegex = Regex("@(\\d\\d\\d\\d)-(\\d\\d)-(\\d\\d)")
     val libs = File("./yang/standard").walkBottomUp()
         .onEnter {
             val sep = FileSystems.getDefault().separator
             !it.toString().contains("yang${sep}standard${sep}mef") // files in mef folder cause the parser to break
         }
         .filter { it.isFile && it.extension == "yang" }
+        .groupBy { it.path.split("@")[0] }
+        .asSequence()
+        .map { (_, v) ->
+            v.singleOrNull() ?: v.map {
+                dateRegex.find(it.path)!!.destructured.let { (year, month, day) ->
+                    it to Triple(year.toInt(), month.toInt(), day.toInt())
+                }
+            }.maxWith(compareBy({ it.second.first }, { it.second.second }, { it.second.third }))
+                .let { it!!.first }
+        }
         .mapNotNull {
             try {
                 YangTextSchemaSource.forFile(it)

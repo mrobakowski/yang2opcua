@@ -16,6 +16,8 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
     private val opcuaRootModel = newModelDesign()
     fun build() = opcuaRootModel
 
+    private val registeredTypes: MutableSet<JQName> = mutableSetOf()
+
     init {
         yangModel.moduleStatements.forEach { (moduleName, module) ->
             println("processing module $moduleName")
@@ -23,7 +25,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         }
     }
 
-//    @Deprecated("This should probably be handled in the future.")
+    //    @Deprecated("This should probably be handled in the future.")
     val ignoredForNow = Unit
 
     fun newModelDesign() = ModelDesign().apply {
@@ -85,19 +87,49 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         }
     }
 
+    fun Parameter.copyDescription(documentedNode: DocumentedNode) {
+        documentedNode.description?.orElse(null)?.let { desc ->
+            description = LocalizedText().apply { value = desc }
+        }
+    }
+
     fun SchemaNode.getSymbolicName(suffix: String = ""): JQName =
         JQName(qName.namespace.toString(), path.pathFromRoot.joinToString("/") { it.localName } + suffix)
 
     fun getDataType(type: TypeDefinition<*>): JQName {
-        if (type.baseType == null) {
+        if (type.isPrimitive()) {
             return translatePrimitiveType(type) ?: error("unknown primitive type [${type.javaClass.simpleName}]")
         }
-
-        val symbolicName = type.getSymbolicName()
-
-        // TODO: create types on demand and cache them
-
+        val symbolicName = type.getSymbolicName("DataType")
+        if (symbolicName !in registeredTypes) registerDataType(type)
         return symbolicName
+    }
+
+    fun registerDataType(type: TypeDefinition<*>) {
+        val typeSymbolicName = type.getSymbolicName("DataType")
+        registeredTypes += typeSymbolicName
+
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
+            symbolicName = typeSymbolicName
+            copyDescription(type)
+
+            val base = type.baseType
+                ?: type // for weird cases where we get a kinda-primitive type here, like an enum from a leaf
+            baseType = translatePrimitiveType(base)
+                ?: error("typedef with base type [${base.javaClass.simpleName}] not supported")
+
+            if (base is EnumTypeDefinition) {
+                fields = ListOfFields().apply {
+                    base.values.forEach {
+                        field += Parameter().apply {
+                            copyDescription(it)
+                            name = it.name
+                            identifier = it.value
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun translatePrimitiveType(type: TypeDefinition<*>): JQName? {
@@ -134,26 +166,10 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
 
     /** Adds a primitive typedef */
     fun addTypedef(typedef: TypedefEffectiveStatement) {
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
-            symbolicName = typedef.typeDefinition.getSymbolicName()
-            copyDescription(typedef as DocumentedNode)
-
-            val base = typedef.typeDefinition.baseType
-            baseType = translatePrimitiveType(base) ?:
-                    error("typedef with base type [${base.javaClass.simpleName}] not supported")
-
-            if (base is EnumTypeDefinition) {
-                fields = ListOfFields().apply {
-                    base.values.forEach {
-                        field += Parameter().apply {
-                            copyDescription(it)
-                            name = it.name
-                            identifier = it.value
-                        }
-                    }
-                }
-            }
-        }
+        typedef as SchemaNode
+        val symbolicName = typedef.getSymbolicName("DataType")
+        // type might have already been registered by some leaf that needed it
+        if (symbolicName !in registeredTypes) registerDataType(typedef.typeDefinition)
     }
 
     fun addIdentityType(identity: IdentityEffectiveStatement) {
@@ -224,7 +240,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
                             typeDefinition = listType.symbolicName
                         }
                     }
-                    is LeafEffectiveStatement -> {
+                    is LeafEffectiveStatement -> { // TODO: special-case this and model idnetityref leafs as references
                         child as LeafSchemaNode
                         val leafType = addLeafType(child)
 
@@ -273,7 +289,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
 
     fun addContainerObjectType(container: ContainerEffectiveStatement): ObjectTypeDesign {
         container as ContainerSchemaNode
-        val res =  ObjectTypeDesign().apply {
+        val res = ObjectTypeDesign().apply {
             symbolicName = container.getSymbolicName("ContainerType")
             copyDescription(container)
             baseType = opcuaRef("BaseObjectType")
@@ -374,3 +390,13 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         return res
     }
 }
+
+private fun TypeDefinition<*>.isPrimitive() =
+    baseType == null &&
+            // not very primitive types that yang considers primitive, but we don't want to
+            this !is EnumTypeDefinition &&
+            this !is EmptyTypeDefinition &&
+            this !is UnionTypeDefinition &&
+            this !is IdentityrefTypeDefinition &&
+            this !is InstanceIdentifierTypeDefinition &&
+            this !is LeafrefTypeDefinition
