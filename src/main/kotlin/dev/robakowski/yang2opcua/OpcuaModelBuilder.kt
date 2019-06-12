@@ -234,9 +234,11 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
-                            description.value += "\n\telement type: ${elementType.symbolicName}" +
-                                    "\n\treference type: ${referenceType.symbolicName}" +
-                                    "\n\telement key: ${child.keyDefinition.joinToString()}"
+                            if (description != null) {
+                                description.value += "\n\telement type: ${elementType.symbolicName}" +
+                                        "\n\treference type: ${referenceType.symbolicName}" +
+                                        "\n\telement key: ${child.keyDefinition.joinToString()}"
+                            }
                             typeDefinition = listType.symbolicName
                         }
                     }

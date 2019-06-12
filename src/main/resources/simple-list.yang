@@ -1,0 +1,17 @@
+module simple-list {
+    namespace "http://example.com/simple-list";
+    prefix simple-list;
+
+    container root {
+        list team {
+          key name;
+          leaf name { type string; }
+          list player {
+            key "name";
+            unique number;
+            leaf name { type string; }
+            leaf number { type uint16; mandatory true; }
+          }
+        }
+    }
+}

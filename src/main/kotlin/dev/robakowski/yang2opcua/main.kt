@@ -15,9 +15,9 @@ import javax.xml.bind.Marshaller
 fun main() {
     val mainFile = YangTextSchemaSource.forFile(File("./yang/experimental/ieee/802.1/ieee802-dot1q-psfp.yang"))
     val dateRegex = Regex("@(\\d\\d\\d\\d)-(\\d\\d)-(\\d\\d)")
+    val sep = FileSystems.getDefault().separator
     val libs = File("./yang/standard").walkBottomUp()
         .onEnter {
-            val sep = FileSystems.getDefault().separator
             !it.toString().contains("yang${sep}standard${sep}mef") // files in mef folder cause the parser to break
         }
         .filter { it.isFile && it.extension == "yang" }
