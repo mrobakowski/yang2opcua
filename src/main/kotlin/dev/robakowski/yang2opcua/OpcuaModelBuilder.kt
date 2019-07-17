@@ -6,37 +6,38 @@ import org.opendaylight.yangtools.yang.model.api.meta.EffectiveStatement
 import org.opendaylight.yangtools.yang.model.api.stmt.*
 import org.opendaylight.yangtools.yang.model.api.type.*
 import org.opendaylight.yangtools.yang.parser.rfc7950.stmt.AbstractEffectiveModule
+import java.net.URI
 import java.time.Instant
 import javax.xml.namespace.QName as JQName
 
 const val OPC_UA_BASE_URI = "http://opcfoundation.org/UA/"
 
 @Suppress("UnstableApiUsage", "MemberVisibilityCanBePrivate")
-class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: String) {
-    private val opcuaRootModels = mutableListOf<RichModelDesign>()
-    private var currentModel: ModelDesign? = null
-    fun build() = opcuaRootModels
+class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: String, designName: String) {
+    private val rootNamespace = "urn:yang2opcua:$designName"
+    private val opcuaRootModel = newModelDesign(designName)
+    private val registeredTypes: MutableSet<JQName> = mutableSetOf()
+    private val registeredIdentities: MutableSet<JQName> = mutableSetOf()
+    private val namespaceMappings = mutableMapOf<URI, String>()
+
+    fun build() = opcuaRootModel
+
     //    @Deprecated("This should probably be handled in the future.")
     val ignoredForNow = Unit
 
-    private val registeredTypes: MutableSet<JQName> = mutableSetOf()
-
     init {
         yangModel.moduleStatements.forEach { (moduleName, module) ->
+            module as AbstractEffectiveModule<*>
             println("processing module $moduleName")
-            val modelDesign = newModelDesign(module)
-            currentModel = modelDesign
-            opcuaRootModels += modelDesign
             addYangModule(module)
         }
     }
 
     class RichModelDesign(val fileName: String) : ModelDesign()
 
-    fun newModelDesign(module: ModuleEffectiveStatement): RichModelDesign {
-        module as AbstractEffectiveModule<*>
-        return RichModelDesign("$outputFolder/${module.name}.Model.xml").apply {
-            targetNamespace = module.namespace.toString()
+    fun newModelDesign(designName: String): RichModelDesign {
+        return RichModelDesign("$outputFolder/$designName.Model.xml").apply {
+            targetNamespace = rootNamespace
 
             namespaces = NamespaceTable().apply {
                 namespace += Namespace().apply {
@@ -51,33 +52,14 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                 }
 
                 namespace += Namespace().apply {
-                    name = module.name
+                    name = "Yang2OpcUA_$designName"
                     version = "0.1"
                     publicationDate = Instant.now().toString()
-                    prefix = module.name
-                    xmlPrefix = module.prefix
+                    prefix = designName
+                    internalPrefix = designName
+                    xmlPrefix = designName
                     xmlNamespace = targetNamespace
                     value = targetNamespace
-                }
-
-                module.imports.forEach { imp ->
-                    imp as ImportEffectiveStatement
-                    val m = yangModel.findModule(imp.moduleName, imp.revision).orElseGet { null }
-
-                    if (m != null) {
-                        namespace += Namespace().apply {
-                            name = m.name
-                            version = "0.1"
-                            publicationDate = Instant.now().toString()
-                            prefix = m.name
-                            xmlPrefix = m.prefix
-                            xmlNamespace = m.namespace.toString()
-                            value = m.namespace.toString()
-                            filePath = "${m.name}.Model.xml"
-                        }
-                    } else {
-                        println("cannot find module for import $imp")
-                    }
                 }
             }
         }
@@ -116,14 +98,23 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
         }
     }
 
+    fun NodeDesign.copyVisibleNames(schemaNode: SchemaNode) {
+        browseName = schemaNode.qName.localName
+        displayName = LocalizedText().apply { key = browseName; value = browseName }
+    }
+
     fun Parameter.copyDescription(documentedNode: DocumentedNode) {
         documentedNode.description?.orElse(null)?.let { desc ->
             description = LocalizedText().apply { value = desc }
         }
     }
 
+    private var namespacePrefixCounter = 0
+    private fun yangNamespacePrefix(n: URI): String =
+        namespaceMappings[n] ?: "ns${namespacePrefixCounter++}__".also { namespaceMappings[n] = it }
+
     fun SchemaNode.getSymbolicName(suffix: String = ""): JQName =
-        JQName(qName.namespace.toString(), path.pathFromRoot.joinToString("__") { it.localName } + suffix)
+        JQName(rootNamespace, yangNamespacePrefix(qName.namespace) + path.pathFromRoot.joinToString("__") { it.localName } + suffix)
 
     fun getDataType(type: TypeDefinition<*>): JQName {
         if (type.isPrimitive()) {
@@ -135,12 +126,13 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
     }
 
     fun registerDataType(type: TypeDefinition<*>) {
-        val typeSymbolicName = type.getSymbolicName("DataType")
-        registeredTypes += typeSymbolicName
+        val sName = type.getSymbolicName("DataType")
+        registeredTypes += sName
 
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
-            symbolicName = typeSymbolicName
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
+            symbolicName = sName
             copyDescription(type)
+            copyVisibleNames(type)
 
             val base = type.baseType
                 ?: type // for weird cases where we get a kinda-primitive type here, like an enum from a leaf
@@ -201,25 +193,34 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
         if (symbolicName !in registeredTypes) registerDataType(typedef.typeDefinition)
     }
 
-    fun addIdentityType(identity: IdentityEffectiveStatement) {
+    fun addIdentityType(identity: IdentityEffectiveStatement): JQName {
         identity as IdentitySchemaNode
+        val sName = identity.getSymbolicName()
 
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += ObjectTypeDesign().apply {
-            symbolicName = identity.getSymbolicName()
+        if (sName in registeredIdentities) return sName
+        registeredIdentities += sName
+
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += ObjectTypeDesign().apply {
+            symbolicName = sName
             copyDescription(identity)
+            copyVisibleNames(identity)
 
             if (identity.baseIdentities.isNotEmpty()) {
-                baseType = identity.baseIdentities
+                val i = identity.baseIdentities
                     .singleOrNull().let { it ?: error("multiple inheritance is not supported [$identity]") }
-                    .getSymbolicName()
+
+                baseType = addIdentityType(i as IdentityEffectiveStatement) // to ensure proper ordering
             }
         }
+
+        return sName
     }
 
-    fun ObjectTypeDesign.makeChildren(yangChildren: Collection<EffectiveStatement<*, *>>): ListOfChildren {
+    fun makeChildren(yangChildren: Collection<EffectiveStatement<*, *>>): ListOfChildren {
         return ListOfChildren().apply {
             yangChildren.forEach { child ->
                 when (child) {
+                    // region ignored
                     is ConfigEffectiveStatement -> ignoredForNow
                     is StatusEffectiveStatement -> ignoredForNow
 
@@ -247,7 +248,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
 
                     // should be handled in ListEffectiveStatement below
                     is KeyEffectiveStatement -> ignoredForNow
-
+                    // endregion
                     is ListEffectiveStatement -> {
                         // so, the mapping from yang lists goes like this
                         // 1) create an object type for the list object
@@ -263,6 +264,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
+                            copyVisibleNames(child)
                             if (description != null) {
                                 description.value += "\n\telement type: ${elementType.symbolicName}" +
                                         "\n\treference type: ${referenceType.symbolicName}" +
@@ -278,6 +280,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                         objectOrVariableOrProperty += VariableDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
+                            copyVisibleNames(child)
                             valueRank = ValueRank.SCALAR
                             typeDefinition = leafType.symbolicName
                         }
@@ -289,6 +292,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                         objectOrVariableOrProperty += VariableDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
+                            copyVisibleNames(child)
                             valueRank = ValueRank.ARRAY
                             typeDefinition = leafListType.symbolicName
                         }
@@ -299,6 +303,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
+                            copyVisibleNames(child)
                             typeDefinition = containerType.symbolicName
                         }
                     }
@@ -309,6 +314,7 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
+                            copyVisibleNames(child)
                             typeDefinition = choiceType.symbolicName
                         }
                     }
@@ -320,88 +326,102 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
 
     fun addContainerObjectType(container: ContainerEffectiveStatement): ObjectTypeDesign {
         container as ContainerSchemaNode
+        val sName = container.getSymbolicName("ContainerType")
         val res = ObjectTypeDesign().apply {
-            symbolicName = container.getSymbolicName("ContainerType")
+            symbolicName = sName
             copyDescription(container)
+            copyVisibleNames(container)
             baseType = opcuaRef("BaseObjectType")
 
             children = makeChildren(container.effectiveSubstatements())
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addListObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
         list as ListSchemaNode
+        val sName = list.getSymbolicName("ListType")
         val res = ObjectTypeDesign().apply {
-            symbolicName = list.getSymbolicName("ListType")
+            symbolicName = sName
             copyDescription(list)
+            copyVisibleNames(list)
             baseType = opcuaRef("BaseObjectType")
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addListElementObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
         list as ListSchemaNode
+        val sName = list.getSymbolicName("ListElementType")
         val res = ObjectTypeDesign().apply {
-            symbolicName = list.getSymbolicName("ListElementType")
+            symbolicName = sName
             copyDescription(list)
+            copyVisibleNames(list)
             baseType = opcuaRef("BaseObjectType")
 
             children = makeChildren(list.effectiveSubstatements())
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addListElementReferenceType(list: ListEffectiveStatement): ReferenceTypeDesign {
         list as ListSchemaNode
+        val sName = list.getSymbolicName("ListElementReferenceType")
         val res = ReferenceTypeDesign().apply {
-            symbolicName = list.getSymbolicName("ListElementReferenceType")
+            symbolicName = sName
             copyDescription(list)
+            copyVisibleNames(list)
             baseType = opcuaRef("HasComponent") // TODO: or maybe `Aggregates`?
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addLeafType(leaf: LeafEffectiveStatement): VariableTypeDesign {
         leaf as LeafSchemaNode
+        val sName = leaf.getSymbolicName("LeafType")
         val res = VariableTypeDesign().apply {
-            symbolicName = leaf.getSymbolicName("LeafType")
+            symbolicName = sName
             copyDescription(leaf)
+            copyVisibleNames(leaf)
             valueRank = ValueRank.SCALAR
             baseType = opcuaRef("BaseDataVariableType")
             dataType = getDataType(leaf.type)
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addLeafListType(leafList: LeafListEffectiveStatement): VariableTypeDesign {
         leafList as LeafListSchemaNode
+        val sName = leafList.getSymbolicName("LeafListType")
         val res = VariableTypeDesign().apply {
-            symbolicName = leafList.getSymbolicName("LeafType")
+            symbolicName = sName
             copyDescription(leafList)
+            copyVisibleNames(leafList)
             valueRank = ValueRank.ARRAY
             baseType = opcuaRef("BaseDataVariableType")
             dataType = getDataType(leafList.type)
         }
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
     fun addChoiceObjectType(choice: ChoiceEffectiveStatement): ObjectTypeDesign {
         choice as ChoiceSchemaNode
+        val sName = choice.getSymbolicName("ChoiceType")
         val choiceType = ObjectTypeDesign().apply {
-            symbolicName = choice.getSymbolicName("ChoiceType")
+            symbolicName = sName
             isIsAbstract = true
             copyDescription(choice)
+            copyVisibleNames(choice)
             baseType = opcuaRef("BaseObjectType")
         }
 
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += choiceType
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += choiceType
         choice.cases.forEach { (_, caseNode) -> addCaseObjectType(caseNode, choiceType.symbolicName) }
 
         return choiceType
@@ -409,15 +429,17 @@ class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: 
 
     fun addCaseObjectType(case: CaseSchemaNode, choiceType: JQName): ObjectTypeDesign {
         case as CaseEffectiveStatement
+        val sName = case.getSymbolicName("CaseType")
         val res = ObjectTypeDesign().apply {
-            symbolicName = case.getSymbolicName("CaseType")
+            symbolicName = sName
             copyDescription(case)
+            copyVisibleNames(case)
             baseType = choiceType
 
             children = makeChildren(case.effectiveSubstatements())
         }
 
-        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
+        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 }

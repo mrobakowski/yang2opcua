@@ -56,17 +56,15 @@ fun main() {
     val outputPath = "./build/models"
 
     val yangModel = parser.buildEffectiveModel()
-    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, outputPath)
+    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, outputPath, "rootModel")
 
-    val opcuaModels = opcuaModelBuilder.build()
+    val opcuaModel = opcuaModelBuilder.build()
 
     val context = JAXBContext.newInstance(ModelDesign::class.java)
     val marshaller = context.createMarshaller().apply { setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true) }
 
     Files.createDirectories(Paths.get(outputPath))
 
-    opcuaModels.forEach { opcuaModel ->
-        marshaller.marshal(opcuaModel, System.out)
-        marshaller.marshal(opcuaModel, File(opcuaModel.fileName))
-    }
+    marshaller.marshal(opcuaModel, System.out)
+    marshaller.marshal(opcuaModel, File(opcuaModel.fileName))
 }
