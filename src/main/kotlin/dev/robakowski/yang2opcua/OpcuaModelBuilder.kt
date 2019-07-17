@@ -50,6 +50,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
                 prefix = mainName
                 xmlPrefix = mainName
                 xmlNamespace = targetNamespace
+                value = mainName
             }
         }
     }
