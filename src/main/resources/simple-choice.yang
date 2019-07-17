@@ -1,6 +1,6 @@
-module simple-list {
-    namespace "http://example.com/simple-list";
-    prefix simple-list;
+module simple-choice {
+    namespace "http://example.com/simple-choice";
+    prefix simple-choice;
 
     container transfer {
         choice how {

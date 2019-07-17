@@ -5,52 +5,80 @@ import org.opendaylight.yangtools.yang.model.api.*
 import org.opendaylight.yangtools.yang.model.api.meta.EffectiveStatement
 import org.opendaylight.yangtools.yang.model.api.stmt.*
 import org.opendaylight.yangtools.yang.model.api.type.*
+import org.opendaylight.yangtools.yang.parser.rfc7950.stmt.AbstractEffectiveModule
 import java.time.Instant
 import javax.xml.namespace.QName as JQName
-import org.opendaylight.yangtools.yang.common.QName as YQName
 
 const val OPC_UA_BASE_URI = "http://opcfoundation.org/UA/"
 
 @Suppress("UnstableApiUsage", "MemberVisibilityCanBePrivate")
-class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) {
-    private val opcuaRootModel = newModelDesign()
-    fun build() = opcuaRootModel
+class OpcuaModelBuilder(val yangModel: EffectiveModelContext, val outputFolder: String) {
+    private val opcuaRootModels = mutableListOf<RichModelDesign>()
+    private var currentModel: ModelDesign? = null
+    fun build() = opcuaRootModels
+    //    @Deprecated("This should probably be handled in the future.")
+    val ignoredForNow = Unit
 
     private val registeredTypes: MutableSet<JQName> = mutableSetOf()
 
     init {
         yangModel.moduleStatements.forEach { (moduleName, module) ->
             println("processing module $moduleName")
+            val modelDesign = newModelDesign(module)
+            currentModel = modelDesign
+            opcuaRootModels += modelDesign
             addYangModule(module)
         }
     }
 
-    //    @Deprecated("This should probably be handled in the future.")
-    val ignoredForNow = Unit
+    class RichModelDesign(val fileName: String) : ModelDesign()
 
-    fun newModelDesign() = ModelDesign().apply {
-        targetNamespace = "urn:yang2opcua:$mainName"
+    fun newModelDesign(module: ModuleEffectiveStatement): RichModelDesign {
+        module as AbstractEffectiveModule<*>
+        return RichModelDesign("$outputFolder/${module.name}.Model.xml").apply {
+            targetNamespace = module.namespace.toString()
 
-        namespaces = NamespaceTable().apply {
-            namespace += Namespace().apply {
-                name = "OpcUa"
-                version = "1.03"
-                publicationDate = "2013-12-02T00:00:00Z"
-                prefix = "Opc.Ua"
-                internalPrefix = "Opc.Ua.Server"
-                xmlNamespace = "http://opcfoundation.org/UA/2008/02/Types.xsd"
-                xmlPrefix = "OpcUa"
-                value = OPC_UA_BASE_URI
-            }
+            namespaces = NamespaceTable().apply {
+                namespace += Namespace().apply {
+                    name = "OpcUa"
+                    version = "1.03"
+                    publicationDate = "2013-12-02T00:00:00Z"
+                    prefix = "Opc.Ua"
+                    internalPrefix = "Opc.Ua.Server"
+                    xmlNamespace = "http://opcfoundation.org/UA/2008/02/Types.xsd"
+                    xmlPrefix = "OpcUa"
+                    value = OPC_UA_BASE_URI
+                }
 
-            namespace += Namespace().apply {
-                name = mainName
-                version = "0.1"
-                publicationDate = Instant.now().toString()
-                prefix = mainName
-                xmlPrefix = mainName
-                xmlNamespace = targetNamespace
-                value = mainName
+                namespace += Namespace().apply {
+                    name = module.name
+                    version = "0.1"
+                    publicationDate = Instant.now().toString()
+                    prefix = module.name
+                    xmlPrefix = module.prefix
+                    xmlNamespace = targetNamespace
+                    value = targetNamespace
+                }
+
+                module.imports.forEach { imp ->
+                    imp as ImportEffectiveStatement
+                    val m = yangModel.findModule(imp.moduleName, imp.revision).orElseGet { null }
+
+                    if (m != null) {
+                        namespace += Namespace().apply {
+                            name = m.name
+                            version = "0.1"
+                            publicationDate = Instant.now().toString()
+                            prefix = m.name
+                            xmlPrefix = m.prefix
+                            xmlNamespace = m.namespace.toString()
+                            value = m.namespace.toString()
+                            filePath = "${m.name}.Model.xml"
+                        }
+                    } else {
+                        println("cannot find module for import $imp")
+                    }
+                }
             }
         }
     }
@@ -95,7 +123,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
     }
 
     fun SchemaNode.getSymbolicName(suffix: String = ""): JQName =
-        JQName(qName.namespace.toString(), path.pathFromRoot.joinToString("/") { it.localName } + suffix)
+        JQName(qName.namespace.toString(), path.pathFromRoot.joinToString("__") { it.localName } + suffix)
 
     fun getDataType(type: TypeDefinition<*>): JQName {
         if (type.isPrimitive()) {
@@ -110,7 +138,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
         val typeSymbolicName = type.getSymbolicName("DataType")
         registeredTypes += typeSymbolicName
 
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += DataTypeDesign().apply {
             symbolicName = typeSymbolicName
             copyDescription(type)
 
@@ -141,7 +169,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             is BooleanTypeDefinition -> "Boolean"
             is DecimalTypeDefinition -> "Int64" // TODO: precision?
             is EmptyTypeDefinition -> "Structure"
-            is EnumTypeDefinition -> "EnumeratedType"
+            is EnumTypeDefinition -> "Enumeration"
             is IdentityrefTypeDefinition -> "NodeId" // TODO identityrefs should probably be implemented as references, not data types
             is IdentityTypeDefinition -> TODO("I think this is impossible?")
             is InstanceIdentifierTypeDefinition -> "ExpandedNodeId" // TODO: is this correct???
@@ -176,7 +204,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
     fun addIdentityType(identity: IdentityEffectiveStatement) {
         identity as IdentitySchemaNode
 
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += ObjectTypeDesign().apply {
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += ObjectTypeDesign().apply {
             symbolicName = identity.getSymbolicName()
             copyDescription(identity)
 
@@ -299,7 +327,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
 
             children = makeChildren(container.effectiveSubstatements())
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -310,7 +338,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             copyDescription(list)
             baseType = opcuaRef("BaseObjectType")
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -323,7 +351,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
 
             children = makeChildren(list.effectiveSubstatements())
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -334,7 +362,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             copyDescription(list)
             baseType = opcuaRef("HasComponent") // TODO: or maybe `Aggregates`?
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -347,7 +375,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             baseType = opcuaRef("BaseDataVariableType")
             dataType = getDataType(leaf.type)
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -360,7 +388,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             baseType = opcuaRef("BaseDataVariableType")
             dataType = getDataType(leafList.type)
         }
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 
@@ -373,7 +401,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             baseType = opcuaRef("BaseObjectType")
         }
 
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += choiceType
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += choiceType
         choice.cases.forEach { (_, caseNode) -> addCaseObjectType(caseNode, choiceType.symbolicName) }
 
         return choiceType
@@ -389,7 +417,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val mainName: String) 
             children = makeChildren(case.effectiveSubstatements())
         }
 
-        opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        currentModel!!.objectTypeOrVariableTypeOrReferenceType += res
         return res
     }
 }
@@ -398,7 +426,6 @@ private fun TypeDefinition<*>.isPrimitive() =
     baseType == null &&
             // not very primitive types that yang considers primitive, but we don't want to
             this !is EnumTypeDefinition &&
-            this !is EmptyTypeDefinition &&
             this !is UnionTypeDefinition &&
             this !is IdentityrefTypeDefinition &&
             this !is InstanceIdentifierTypeDefinition &&

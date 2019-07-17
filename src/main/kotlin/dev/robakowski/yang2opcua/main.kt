@@ -8,6 +8,8 @@ import org.opendaylight.yangtools.yang.model.repo.api.YangTextSchemaSource
 import org.opendaylight.yangtools.yang.parser.impl.YangParserFactoryImpl
 import java.io.File
 import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.Paths
 import javax.xml.bind.JAXBContext
 import javax.xml.bind.Marshaller
 
@@ -51,14 +53,20 @@ fun main() {
         }
     }
 
-    val yangModel = parser.buildEffectiveModel()
-    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, "ieee802-dot1q-psfp")
+    val outputPath = "./build/models"
 
-    val opcuaModel = opcuaModelBuilder.build()
+    val yangModel = parser.buildEffectiveModel()
+    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, outputPath)
+
+    val opcuaModels = opcuaModelBuilder.build()
 
     val context = JAXBContext.newInstance(ModelDesign::class.java)
     val marshaller = context.createMarshaller().apply { setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true) }
 
-    marshaller.marshal(opcuaModel, System.out)
-    marshaller.marshal(opcuaModel, File("./build/ieee802-dot1q-psfp.Model.xml"))
+    Files.createDirectories(Paths.get(outputPath))
+
+    opcuaModels.forEach { opcuaModel ->
+        marshaller.marshal(opcuaModel, System.out)
+        marshaller.marshal(opcuaModel, File(opcuaModel.fileName))
+    }
 }
