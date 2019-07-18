@@ -2,11 +2,17 @@
 
 package dev.robakowski.yang2opcua
 
+import com.google.gson.Gson
 import org.opcfoundation.ua.modeldesign.ModelDesign
+import org.opendaylight.yangtools.yang.data.codec.gson.JSONCodecFactorySupplier
+import org.opendaylight.yangtools.yang.data.codec.gson.JsonParserStream
+import org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNormalizedNodeStreamWriter
+import org.opendaylight.yangtools.yang.data.impl.schema.NormalizedNodeResult
 import org.opendaylight.yangtools.yang.model.parser.api.YangSyntaxErrorException
 import org.opendaylight.yangtools.yang.model.repo.api.YangTextSchemaSource
 import org.opendaylight.yangtools.yang.parser.impl.YangParserFactoryImpl
 import java.io.File
+import java.io.StringReader
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -15,7 +21,7 @@ import javax.xml.bind.Marshaller
 
 
 fun main() {
-    val mainFile = YangTextSchemaSource.forFile(File("./yang/experimental/ieee/802.1/ieee802-dot1q-psfp.yang"))
+    val mainFile = YangTextSchemaSource.forFile(File("C:\\Users\\mrobakowski\\IdeaProjects\\yang2opcua\\src\\main\\resources\\simple-list.yang"))
     val dateRegex = Regex("@(\\d\\d\\d\\d)-(\\d\\d)-(\\d\\d)")
     val sep = FileSystems.getDefault().separator
     val libs = File("./yang/standard").walkBottomUp()
@@ -56,7 +62,41 @@ fun main() {
     val outputPath = "./build/models"
 
     val yangModel = parser.buildEffectiveModel()
-    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, outputPath, "rootModel")
+    val codecFactory = JSONCodecFactorySupplier.DRAFT_LHOTKA_NETMOD_YANG_JSON_02.createSimple(yangModel)
+    val result = NormalizedNodeResult()
+    val streamWriter = ImmutableNormalizedNodeStreamWriter.from(result)
+    val jsonParserStream = JsonParserStream.create(streamWriter, codecFactory)
+
+    //language=JSON
+    jsonParserStream.parse(Gson().newJsonReader(StringReader("""{
+      "root": {
+        "team": [
+          {
+            "name": "Reds",
+            "player": [
+              {
+                "number": 1,
+                "name": "John Doe"
+              }
+            ]
+          },
+          {
+            "name": "Blues",
+            "player": [
+              {
+                "number": 2,
+                "name": "Foo Bar"
+              }
+            ]
+          }
+        ]  
+      }
+    }
+    """.trimIndent())))
+
+    val nodes = result.result
+
+    val opcuaModelBuilder = OpcuaModelBuilder(yangModel, outputPath, "rootModel", nodes)
 
     val opcuaModel = opcuaModelBuilder.build()
 

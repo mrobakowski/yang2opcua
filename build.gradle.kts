@@ -19,6 +19,7 @@ dependencies {
     implementation("org.opendaylight.yangtools:yang-model-util:3.0.0")
     implementation("org.opendaylight.yangtools:yang-parser-api:3.0.0")
     implementation("org.opendaylight.yangtools:yang-parser-impl:3.0.0")
+    implementation("org.opendaylight.yangtools:yang-data-codec-gson:3.0.0")
     implementation("org.slf4j:slf4j-api:1.8.0-beta4")
 }
 

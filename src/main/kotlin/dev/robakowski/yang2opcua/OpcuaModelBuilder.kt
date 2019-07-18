@@ -1,6 +1,8 @@
 package dev.robakowski.yang2opcua
 
 import org.opcfoundation.ua.modeldesign.*
+import org.opendaylight.yangtools.yang.data.api.schema.ContainerNode
+import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode
 import org.opendaylight.yangtools.yang.model.api.*
 import org.opendaylight.yangtools.yang.model.api.meta.EffectiveStatement
 import org.opendaylight.yangtools.yang.model.api.stmt.*
@@ -14,7 +16,12 @@ import javax.xml.namespace.QName as JQName
 const val OPC_UA_BASE_URI = "http://opcfoundation.org/UA/"
 
 @Suppress("UnstableApiUsage", "MemberVisibilityCanBePrivate")
-class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: String, designName: String) {
+class OpcuaModelBuilder(
+    yangModel: EffectiveModelContext,
+    val outputFolder: String,
+    designName: String,
+    rootNode: NormalizedNode<*, *>?
+) {
     private val rootNamespace = "urn:yang2opcua:$designName"
     private val opcuaRootModel = newModelDesign(designName)
     private val registeredTypes: MutableSet<JQName> = mutableSetOf()
@@ -30,8 +37,21 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         yangModel.moduleStatements.forEach { (moduleName, module) ->
             module as AbstractEffectiveModule<*>
             println("processing module $moduleName")
-            addYangModule(module)
+            addYangModule(module, rootNode)
         }
+
+        if (rootNode != null) {
+            addInitialData(rootNode)
+        }
+    }
+
+    private fun addInitialData(node: NormalizedNode<*, *>) {
+        when (node) {
+            is ContainerNode -> {
+                node
+            }
+        }
+        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
     }
 
     class RichModelDesign(val fileName: String) : ModelDesign()
@@ -66,9 +86,12 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         }
     }
 
-    fun addYangModule(yangModule: ModuleEffectiveStatement) {
-        yangModule.effectiveSubstatements().forEach {
-            when (it) {
+    fun addYangModule(
+        yangModule: ModuleEffectiveStatement,
+        rootNode: NormalizedNode<*, *>?
+    ) {
+        yangModule.effectiveSubstatements().forEach { es ->
+            when (es) {
                 is NamespaceEffectiveStatement -> ignoredForNow
                 is PrefixEffectiveStatement -> ignoredForNow
                 is ImportEffectiveStatement -> ignoredForNow
@@ -79,16 +102,19 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
                 is FeatureEffectiveStatement -> ignoredForNow
                 is ReferenceEffectiveStatement -> ignoredForNow
                 is YangVersionEffectiveStatement -> ignoredForNow
-                is IdentityEffectiveStatement -> addIdentityType(it)
-                is ContainerEffectiveStatement -> addContainerObjectType(it)
-                is TypedefEffectiveStatement -> addTypedef(it)
+                is IdentityEffectiveStatement -> addIdentityType(es)
+                is ContainerEffectiveStatement -> {
+                    val thisNode = (rootNode as? ContainerNode)?.takeIf { es.identifier == it.identifier.nodeType }
+                    addContainerObjectType(es, thisNode)
+                }
+                is TypedefEffectiveStatement -> addTypedef(es)
 
                 // we process effective models, so this should already be inlined
                 is GroupingEffectiveStatement -> ignoredForNow
 
                 // we process effective models, so this should already be inlined
                 is AugmentEffectiveStatement -> ignoredForNow
-                else -> TODO("Effective Statement of type ${it.javaClass.simpleName} not supported")
+                else -> TODO("Effective Statement of type ${es.javaClass.simpleName} not supported")
             }
         }
     }
@@ -106,8 +132,11 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         }
     }
 
-    fun NodeDesign.copyVisibleNames(schemaNode: SchemaNode) {
-        browseName = schemaNode.qName.localName
+    fun NodeDesign.copyVisibleNames(schemaNode: SchemaNode, prefix: String = "", suffix: String = "") {
+        browseName = schemaNode.qName.localName + suffix
+        if (!prefix.isBlank()) {
+            browseName = prefix + browseName.capitalize()
+        }
         displayName = LocalizedText().apply { key = browseName; value = browseName }
     }
 
@@ -279,7 +308,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
-                            copyVisibleNames(child)
+                            copyVisibleNames(child, suffix = "List")
                             if (description != null) {
                                 description.value += "\n\telement type: ${elementType.symbolicName}" +
                                         "\n\treference type: ${referenceType.symbolicName}" +
@@ -314,7 +343,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
                     }
                     is ContainerEffectiveStatement -> {
                         child as ContainerSchemaNode
-                        val containerType = addContainerObjectType(child)
+                        val containerType = addContainerObjectType(child, thisNode)
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
@@ -339,7 +368,10 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         }
     }
 
-    fun addContainerObjectType(container: ContainerEffectiveStatement): ObjectTypeDesign {
+    fun addContainerObjectType(
+        container: ContainerEffectiveStatement,
+        thisNode: ContainerNode?
+    ): ObjectTypeDesign {
         container as ContainerSchemaNode
         val sName = container.getSymbolicName("ContainerType")
         val res = ObjectTypeDesign().apply {
@@ -388,7 +420,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         val res = ReferenceTypeDesign().apply {
             symbolicName = sName
             copyDescription(list)
-            copyVisibleNames(list)
+            copyVisibleNames(list, prefix = "Contains")
             baseType = opcuaRef("HasComponent") // TODO: or maybe `Aggregates`?
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
