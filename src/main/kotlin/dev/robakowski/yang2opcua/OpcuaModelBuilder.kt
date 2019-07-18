@@ -7,6 +7,7 @@ import org.opendaylight.yangtools.yang.model.api.stmt.*
 import org.opendaylight.yangtools.yang.model.api.type.*
 import org.opendaylight.yangtools.yang.parser.rfc7950.stmt.AbstractEffectiveModule
 import java.net.URI
+import java.text.Normalizer
 import java.time.Instant
 import javax.xml.namespace.QName as JQName
 
@@ -92,9 +93,16 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
         }
     }
 
+    fun safeText(s: String) = s
+        .replace('\u2019', '\'')
+        .replace("\n", " ")
+        .replace("\t", " ")
+        .let { Normalizer.normalize(it, Normalizer.Form.NFD) }
+        .filter { it < 128.toChar() }
+
     fun NodeDesign.copyDescription(documentedNode: DocumentedNode) {
         documentedNode.description?.orElse(null)?.let { desc ->
-            description = LocalizedText().apply { value = desc }
+            description = LocalizedText().apply { value = safeText(desc) }
         }
     }
 
@@ -105,7 +113,7 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
 
     fun Parameter.copyDescription(documentedNode: DocumentedNode) {
         documentedNode.description?.orElse(null)?.let { desc ->
-            description = LocalizedText().apply { value = desc }
+            description = LocalizedText().apply { value = safeText(desc) }
         }
     }
 
@@ -113,8 +121,15 @@ class OpcuaModelBuilder(yangModel: EffectiveModelContext, val outputFolder: Stri
     private fun yangNamespacePrefix(n: URI): String =
         namespaceMappings[n] ?: "ns${namespacePrefixCounter++}__".also { namespaceMappings[n] = it }
 
-    fun SchemaNode.getSymbolicName(suffix: String = ""): JQName =
-        JQName(rootNamespace, yangNamespacePrefix(qName.namespace) + path.pathFromRoot.joinToString("__") { it.localName } + suffix)
+    fun SchemaNode.getSymbolicName(suffix: String = ""): JQName {
+        val potentiallyInvalidName = yangNamespacePrefix(qName.namespace) + path.pathFromRoot.joinToString("___") { it.localName } + suffix
+        val iHopeThisIsValidCIdentifier = potentiallyInvalidName.replace("-", "__").replace(".", "_")
+
+        iHopeThisIsValidCIdentifier.firstOrNull()?.let { if (!it.isJavaIdentifierStart()) error("invalid name: $iHopeThisIsValidCIdentifier") }
+        if (!iHopeThisIsValidCIdentifier.drop(1).all { it.isJavaIdentifierPart() }) error("invalid name: $iHopeThisIsValidCIdentifier")
+
+        return JQName(rootNamespace, iHopeThisIsValidCIdentifier)
+    }
 
     fun getDataType(type: TypeDefinition<*>): JQName {
         if (type.isPrimitive()) {

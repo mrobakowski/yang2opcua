@@ -4,3 +4,6 @@
 [submodule "model_compiler"]
 	path = model_compiler
 	url = git@github.com:Pro/UA-ModelCompiler.git
+[submodule "opcua-server"]
+	path = opcua-server
+	url = git@github.com:mrobakowski/opcua-server.git
