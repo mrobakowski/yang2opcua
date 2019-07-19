@@ -12,6 +12,7 @@ import org.opendaylight.yangtools.yang.model.parser.api.YangSyntaxErrorException
 import org.opendaylight.yangtools.yang.model.repo.api.YangTextSchemaSource
 import org.opendaylight.yangtools.yang.parser.impl.YangParserFactoryImpl
 import java.io.File
+import java.io.FileReader
 import java.io.StringReader
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -67,32 +68,7 @@ fun main() {
     val streamWriter = ImmutableNormalizedNodeStreamWriter.from(result)
     val jsonParserStream = JsonParserStream.create(streamWriter, codecFactory)
 
-    //language=JSON
-    jsonParserStream.parse(Gson().newJsonReader(StringReader("""{
-      "root": {
-        "team": [
-          {
-            "name": "Reds",
-            "player": [
-              {
-                "number": 1,
-                "name": "John Doe"
-              }
-            ]
-          },
-          {
-            "name": "Blues",
-            "player": [
-              {
-                "number": 2,
-                "name": "Foo Bar"
-              }
-            ]
-          }
-        ]  
-      }
-    }
-    """.trimIndent())))
+    jsonParserStream.parse(Gson().newJsonReader(FileReader("./src/main/resources/simple-list.json")))
 
     val nodes = result.result
 

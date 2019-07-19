@@ -1,0 +1,32 @@
+{
+  "root": {
+    "team": [
+      {
+        "name": "Reds",
+        "player": [
+          {
+            "number": 1,
+            "name": "John Doe"
+          },
+          {
+            "number": 2,
+            "name": "Don Joe"
+          }
+        ]
+      },
+      {
+        "name": "Blues",
+        "player": [
+          {
+            "number": 1,
+            "name": "Bar Baz"
+          },
+          {
+            "number": 2,
+            "name": "Foo Bar"
+          }
+        ]
+      }
+    ]
+  }
+}
