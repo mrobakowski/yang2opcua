@@ -120,12 +120,15 @@ class OpcuaModelBuilder(
         }
     }
 
-    fun NodeDesign.copyVisibleNames(schemaNode: SchemaNode, prefix: String = "", suffix: String = "") {
+    fun NodeDesign.copyVisibleNames(schemaNode: SchemaNode, parent: ObjectDesign? = null, prefix: String = "", suffix: String = "") {
         browseName = schemaNode.qName.localName + suffix
         if (!prefix.isBlank()) {
             browseName = prefix + browseName.capitalize()
         }
-        displayName = LocalizedText().apply { key = browseName; value = browseName }
+
+        val dispName = parent?.browseName?.let { "$it/$browseName" } ?: browseName
+
+        displayName = LocalizedText().apply { key = dispName; value = dispName }
     }
 
     fun Parameter.copyDescription(documentedNode: DocumentedNode) {
@@ -335,9 +338,10 @@ class OpcuaModelBuilder(
                         objectOrVariableOrProperty += VariableDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
-                            copyVisibleNames(child)
+                            copyVisibleNames(child, parent = parent)
                             valueRank = ValueRank.SCALAR
                             typeDefinition = leafType.symbolicName
+                            accessLevel = AccessLevel.READ_WRITE
 
                             if (childData != null) {
                                 defaultValue = packPrimitive(childData.value, leafType.dataType)
@@ -408,8 +412,7 @@ class OpcuaModelBuilder(
                 typeDefinition = listElementType.symbolicName
                 symbolicName = list.getSymbolicName("ElementInstance$i")
                 copyDescription(list)
-                copyVisibleNames(list, suffix = mapEntry.identifier.keyValues.values
-                    .joinToString(prefix = " (", separator = ", ", postfix = ")") { it.toString() })
+                copyVisibleNames(list, suffix = " $i")
 
                 references = ListOfReferences().apply {
                     reference += Reference().apply {
