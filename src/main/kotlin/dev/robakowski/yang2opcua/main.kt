@@ -25,6 +25,7 @@ fun main() {
     val mainFile = YangTextSchemaSource.forFile(File("./src/main/resources/simple-list.yang"))
     val dateRegex = Regex("@(\\d\\d\\d\\d)-(\\d\\d)-(\\d\\d)")
     val sep = FileSystems.getDefault().separator
+    // region library files
     val libs = File("./yang/standard").walkBottomUp()
         .onEnter {
             !it.toString().contains("yang${sep}standard${sep}mef") // files in mef folder cause the parser to break
@@ -48,6 +49,7 @@ fun main() {
                 null
             }
         }.toList()
+    // endregion
 
     val parser = YangParserFactoryImpl().createParser().apply {
         addSource(mainFile)

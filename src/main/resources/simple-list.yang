@@ -4,14 +4,14 @@ module simple-list {
 
     container root {
         list team {
-          key name;
-          leaf name { type string; }
-          list player {
-            key "name";
-            unique number;
+            key name;
             leaf name { type string; }
-            leaf number { type uint16; mandatory true; }
-          }
+            list player {
+                key "name";
+                unique number;
+                leaf name { type string; }
+                leaf number { type uint16; mandatory true; }
+            }
         }
     }
 }
