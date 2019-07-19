@@ -21,7 +21,7 @@ import javax.xml.bind.Marshaller
 
 
 fun main() {
-    val mainFile = YangTextSchemaSource.forFile(File("C:\\Users\\mrobakowski\\IdeaProjects\\yang2opcua\\src\\main\\resources\\simple-list.yang"))
+    val mainFile = YangTextSchemaSource.forFile(File("./src/main/resources/simple-list.yang"))
     val dateRegex = Regex("@(\\d\\d\\d\\d)-(\\d\\d)-(\\d\\d)")
     val sep = FileSystems.getDefault().separator
     val libs = File("./yang/standard").walkBottomUp()
