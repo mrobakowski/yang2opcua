@@ -1,8 +1,8 @@
 package dev.robakowski.yang2opcua
 
 import org.opcfoundation.ua.modeldesign.*
-import org.opendaylight.yangtools.yang.data.api.schema.ContainerNode
-import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier
+import org.opendaylight.yangtools.yang.data.api.schema.*
 import org.opendaylight.yangtools.yang.model.api.*
 import org.opendaylight.yangtools.yang.model.api.meta.EffectiveStatement
 import org.opendaylight.yangtools.yang.model.api.stmt.*
@@ -11,16 +11,17 @@ import org.opendaylight.yangtools.yang.parser.rfc7950.stmt.AbstractEffectiveModu
 import java.net.URI
 import java.text.Normalizer
 import java.time.Instant
+import javax.xml.bind.JAXBElement
 import javax.xml.namespace.QName as JQName
 
 const val OPC_UA_BASE_URI = "http://opcfoundation.org/UA/"
 
 @Suppress("UnstableApiUsage", "MemberVisibilityCanBePrivate")
 class OpcuaModelBuilder(
-    yangModel: EffectiveModelContext,
+    val yangModel: EffectiveModelContext,
     val outputFolder: String,
     designName: String,
-    rootNode: NormalizedNode<*, *>?
+    val rootNode: NormalizedNode<*, *>?
 ) {
     private val rootNamespace = "urn:yang2opcua:$designName"
     private val opcuaRootModel = newModelDesign(designName)
@@ -28,31 +29,18 @@ class OpcuaModelBuilder(
     private val registeredIdentities: MutableSet<JQName> = mutableSetOf()
     private val namespaceMappings = mutableMapOf<URI, String>()
 
-    fun build() = opcuaRootModel
-
-    //    @Deprecated("This should probably be handled in the future.")
-    val ignoredForNow = Unit
-
-    init {
+    fun build(): RichModelDesign {
         yangModel.moduleStatements.forEach { (moduleName, module) ->
             module as AbstractEffectiveModule<*>
             println("processing module $moduleName")
             addYangModule(module, rootNode)
         }
 
-        if (rootNode != null) {
-            addInitialData(rootNode)
-        }
+        return opcuaRootModel
     }
 
-    private fun addInitialData(node: NormalizedNode<*, *>) {
-        when (node) {
-            is ContainerNode -> {
-                node
-            }
-        }
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
+    //    @Deprecated("This should probably be handled in the future.")
+    val ignoredForNow = Unit
 
     class RichModelDesign(val fileName: String) : ModelDesign()
 
@@ -151,10 +139,12 @@ class OpcuaModelBuilder(
         namespaceMappings[n] ?: "ns${namespacePrefixCounter++}__".also { namespaceMappings[n] = it }
 
     fun SchemaNode.getSymbolicName(suffix: String = ""): JQName {
-        val potentiallyInvalidName = yangNamespacePrefix(qName.namespace) + path.pathFromRoot.joinToString("___") { it.localName } + suffix
+        val potentiallyInvalidName =
+            yangNamespacePrefix(qName.namespace) + path.pathFromRoot.joinToString("___") { it.localName } + suffix
         val iHopeThisIsValidCIdentifier = potentiallyInvalidName.replace("-", "__").replace(".", "_")
 
-        iHopeThisIsValidCIdentifier.firstOrNull()?.let { if (!it.isJavaIdentifierStart()) error("invalid name: $iHopeThisIsValidCIdentifier") }
+        iHopeThisIsValidCIdentifier.firstOrNull()
+            ?.let { if (!it.isJavaIdentifierStart()) error("invalid name: $iHopeThisIsValidCIdentifier") }
         if (!iHopeThisIsValidCIdentifier.drop(1).all { it.isJavaIdentifierPart() }) error("invalid name: $iHopeThisIsValidCIdentifier")
 
         return JQName(rootNamespace, iHopeThisIsValidCIdentifier)
@@ -260,7 +250,11 @@ class OpcuaModelBuilder(
         return sName
     }
 
-    fun makeChildren(yangChildren: Collection<EffectiveStatement<*, *>>): ListOfChildren {
+    fun makeChildren(
+        yangChildren: Collection<EffectiveStatement<*, *>>,
+        yangChildrenData: Collection<DataContainerChild<out YangInstanceIdentifier.PathArgument, *>>?,
+        parent: ObjectDesign?
+    ): ListOfChildren {
         return ListOfChildren().apply {
             yangChildren.forEach { child ->
                 when (child) {
@@ -301,12 +295,19 @@ class OpcuaModelBuilder(
                         // 4) add the list object of type from 1) to the current type design
                         // TODO: validate if this is a correct encoding
 
+                        val childData = yangChildrenData?.find { childData ->
+                            (childData as? MapNode)
+                                ?.let { it.identifier.nodeType == child.identifier }
+                                ?: false
+                        } as? MapNode
+
                         child as ListSchemaNode
                         val listType = addListObjectType(child)
                         val elementType = addListElementObjectType(child)
                         val referenceType = addListElementReferenceType(child)
+                        val sName = child.getSymbolicName()
                         objectOrVariableOrProperty += ObjectDesign().apply {
-                            symbolicName = child.getSymbolicName()
+                            symbolicName = sName
                             copyDescription(child)
                             copyVisibleNames(child, suffix = "List")
                             if (description != null) {
@@ -316,8 +317,18 @@ class OpcuaModelBuilder(
                             }
                             typeDefinition = listType.symbolicName
                         }
+
+                        if (childData != null && parent != null) {
+                            addListElementObjectInstances(child, childData, elementType, referenceType, parent)
+                        }
                     }
                     is LeafEffectiveStatement -> { // TODO: special-case this and model idnetityref leafs as references
+                        val childData = yangChildrenData?.find { childData ->
+                            (childData as? LeafNode)
+                                ?.let { it.identifier.nodeType == child.identifier }
+                                ?: false
+                        } as? LeafNode
+
                         child as LeafSchemaNode
                         val leafType = addLeafType(child)
 
@@ -327,6 +338,10 @@ class OpcuaModelBuilder(
                             copyVisibleNames(child)
                             valueRank = ValueRank.SCALAR
                             typeDefinition = leafType.symbolicName
+
+                            if (childData != null) {
+                                defaultValue = packPrimitive(childData.value, leafType.dataType)
+                            }
                         }
                     }
                     is LeafListEffectiveStatement -> {
@@ -343,7 +358,7 @@ class OpcuaModelBuilder(
                     }
                     is ContainerEffectiveStatement -> {
                         child as ContainerSchemaNode
-                        val containerType = addContainerObjectType(child, thisNode)
+                        val containerType = addContainerObjectType(child, null)
                         objectOrVariableOrProperty += ObjectDesign().apply {
                             symbolicName = child.getSymbolicName()
                             copyDescription(child)
@@ -368,27 +383,99 @@ class OpcuaModelBuilder(
         }
     }
 
+    private fun packPrimitive(value: Any?, expectedType: JQName): DefaultValue {
+        return DefaultValue().apply {
+            any = JAXBElement(JQName("http://opcfoundation.org/UA/2008/02/Types.xsd", expectedType.localPart), value?.javaClass, value)
+        }
+    }
+
+    private val elementInstanceCounter: MutableMap<JQName, Int> = mutableMapOf()
+    private fun addListElementObjectInstances(
+        list: ListSchemaNode,
+        listData: MapNode,
+        listElementType: ObjectTypeDesign,
+        listReferenceType: ReferenceTypeDesign,
+        listParent: ObjectDesign
+    ) {
+        val listName = list.getSymbolicName()
+        val listFullName = JQName(listName.namespaceURI, listParent.symbolicName.localPart + "_" + listName.localPart)
+
+        listData.value.forEach { mapEntry ->
+            val i = elementInstanceCounter.getOrDefault(listName, 0)
+            elementInstanceCounter[listName] = i + 1
+
+            val listElement = ObjectDesign().apply {
+                typeDefinition = listElementType.symbolicName
+                symbolicName = list.getSymbolicName("ElementInstance$i")
+                copyDescription(list)
+                copyVisibleNames(list, suffix = mapEntry.identifier.keyValues.values
+                    .joinToString(prefix = " (", separator = ", ", postfix = ")") { it.toString() })
+
+                references = ListOfReferences().apply {
+                    reference += Reference().apply {
+                        referenceType = listReferenceType.symbolicName
+                        isIsInverse = true
+                        targetId = listFullName
+                    }
+                }
+
+                children = makeChildren((list as ListEffectiveStatement).effectiveSubstatements(), mapEntry.value, this)
+            }
+
+            opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += listElement
+        }
+    }
+
+    private val registeredContainerObjectTypes: MutableMap<JQName, ObjectTypeDesign> = mutableMapOf()
     fun addContainerObjectType(
         container: ContainerEffectiveStatement,
         thisNode: ContainerNode?
     ): ObjectTypeDesign {
         container as ContainerSchemaNode
         val sName = container.getSymbolicName("ContainerType")
+        registeredContainerObjectTypes[sName]?.let { return it }
+
         val res = ObjectTypeDesign().apply {
             symbolicName = sName
             copyDescription(container)
             copyVisibleNames(container)
             baseType = opcuaRef("BaseObjectType")
 
-            children = makeChildren(container.effectiveSubstatements())
+            children = makeChildren(container.effectiveSubstatements(), null, null)
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredContainerObjectTypes += sName to res
+
+        if (thisNode != null) {
+            val objectDesign = ObjectDesign().apply {
+                symbolicName = container.getSymbolicName("ContainerInstance")
+                copyDescription(container)
+                copyVisibleNames(container)
+                typeDefinition = sName
+
+                references = ListOfReferences().apply {
+                    reference += Reference().apply {
+                        referenceType = opcuaRef("Organizes")
+                        targetId = opcuaRef("ObjectsFolder")
+                        isIsInverse = true
+                    }
+                }
+
+                children = makeChildren(container.effectiveSubstatements(), thisNode.value, this)
+            }
+
+            opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += objectDesign
+        }
+
         return res
     }
 
+    val registeredListObjectTypes: MutableMap<JQName, ObjectTypeDesign> = mutableMapOf()
     fun addListObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
         list as ListSchemaNode
         val sName = list.getSymbolicName("ListType")
+        registeredListObjectTypes[sName]?.let { return it }
+
         val res = ObjectTypeDesign().apply {
             symbolicName = sName
             copyDescription(list)
@@ -396,27 +483,35 @@ class OpcuaModelBuilder(
             baseType = opcuaRef("BaseObjectType")
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredListObjectTypes += sName to res
         return res
     }
 
+    val registeredListElementObjectTypes: MutableMap<JQName, ObjectTypeDesign> = mutableMapOf()
     fun addListElementObjectType(list: ListEffectiveStatement): ObjectTypeDesign {
         list as ListSchemaNode
         val sName = list.getSymbolicName("ListElementType")
+        registeredListElementObjectTypes[sName]?.let { return it }
+
         val res = ObjectTypeDesign().apply {
             symbolicName = sName
             copyDescription(list)
             copyVisibleNames(list)
             baseType = opcuaRef("BaseObjectType")
 
-            children = makeChildren(list.effectiveSubstatements())
+            children = makeChildren(list.effectiveSubstatements(), null, null)
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredListElementObjectTypes += sName to res
         return res
     }
 
+    val registeredListElementReferenceTypes: MutableMap<JQName, ReferenceTypeDesign> = mutableMapOf()
     fun addListElementReferenceType(list: ListEffectiveStatement): ReferenceTypeDesign {
         list as ListSchemaNode
         val sName = list.getSymbolicName("ListElementReferenceType")
+        registeredListElementReferenceTypes[sName]?.let { return it }
+
         val res = ReferenceTypeDesign().apply {
             symbolicName = sName
             copyDescription(list)
@@ -424,12 +519,16 @@ class OpcuaModelBuilder(
             baseType = opcuaRef("HasComponent") // TODO: or maybe `Aggregates`?
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredListElementReferenceTypes += sName to res
         return res
     }
 
+    private val registeredLeafTypes: MutableMap<JQName, VariableTypeDesign> = mutableMapOf()
     fun addLeafType(leaf: LeafEffectiveStatement): VariableTypeDesign {
         leaf as LeafSchemaNode
         val sName = leaf.getSymbolicName("LeafType")
+        registeredLeafTypes[sName]?.let { return it }
+
         val res = VariableTypeDesign().apply {
             symbolicName = sName
             copyDescription(leaf)
@@ -439,12 +538,16 @@ class OpcuaModelBuilder(
             dataType = getDataType(leaf.type)
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredLeafTypes += sName to res
         return res
     }
 
+    private val registeredLeafListTypes: MutableMap<JQName, VariableTypeDesign> = mutableMapOf()
     fun addLeafListType(leafList: LeafListEffectiveStatement): VariableTypeDesign {
         leafList as LeafListSchemaNode
         val sName = leafList.getSymbolicName("LeafListType")
+        registeredLeafListTypes[sName]?.let { return it }
+
         val res = VariableTypeDesign().apply {
             symbolicName = sName
             copyDescription(leafList)
@@ -454,12 +557,16 @@ class OpcuaModelBuilder(
             dataType = getDataType(leafList.type)
         }
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredLeafListTypes += sName to res
         return res
     }
 
+    private val registeredChoiceObjectTypes: MutableMap<JQName, ObjectTypeDesign> = mutableMapOf()
     fun addChoiceObjectType(choice: ChoiceEffectiveStatement): ObjectTypeDesign {
         choice as ChoiceSchemaNode
         val sName = choice.getSymbolicName("ChoiceType")
+        registeredChoiceObjectTypes[sName]?.let { return it }
+
         val choiceType = ObjectTypeDesign().apply {
             symbolicName = sName
             isIsAbstract = true
@@ -469,24 +576,29 @@ class OpcuaModelBuilder(
         }
 
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += choiceType
+        registeredChoiceObjectTypes += sName to choiceType
         choice.cases.forEach { (_, caseNode) -> addCaseObjectType(caseNode, choiceType.symbolicName) }
 
         return choiceType
     }
 
+    private val registeredCaseObjectTypes: MutableMap<JQName, ObjectTypeDesign> = mutableMapOf()
     fun addCaseObjectType(case: CaseSchemaNode, choiceType: JQName): ObjectTypeDesign {
         case as CaseEffectiveStatement
         val sName = case.getSymbolicName("CaseType")
+        registeredCaseObjectTypes[sName]?.let { return it }
+
         val res = ObjectTypeDesign().apply {
             symbolicName = sName
             copyDescription(case)
             copyVisibleNames(case)
             baseType = choiceType
 
-            children = makeChildren(case.effectiveSubstatements())
+            children = makeChildren(case.effectiveSubstatements(), null, null)
         }
 
         opcuaRootModel.objectTypeOrVariableTypeOrReferenceType += res
+        registeredCaseObjectTypes += sName to res
         return res
     }
 }

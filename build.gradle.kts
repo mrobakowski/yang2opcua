@@ -32,5 +32,9 @@ jaxb {
         create("opcua-model") {
             setSchema(file("src/main/resources/UA Model Design.xsd"))
         }
+
+        create("opcua-types") {
+            setSchema(file("src/main/resources/UA Types.xsd"))
+        }
     }
 }
