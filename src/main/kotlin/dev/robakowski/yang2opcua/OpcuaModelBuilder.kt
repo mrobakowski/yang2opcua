@@ -19,7 +19,6 @@ const val OPC_UA_BASE_URI = "http://opcfoundation.org/UA/"
 @Suppress("UnstableApiUsage", "MemberVisibilityCanBePrivate")
 class OpcuaModelBuilder(
     val yangModel: EffectiveModelContext,
-    val outputFolder: String,
     designName: String,
     val rootNode: NormalizedNode<*, *>?
 ) {
@@ -29,7 +28,7 @@ class OpcuaModelBuilder(
     private val registeredIdentities: MutableSet<JQName> = mutableSetOf()
     private val namespaceMappings = mutableMapOf<URI, String>()
 
-    fun build(): RichModelDesign {
+    fun build(): ModelDesign {
         yangModel.moduleStatements.forEach { (moduleName, module) ->
             module as AbstractEffectiveModule<*>
             println("processing module $moduleName")
@@ -41,11 +40,9 @@ class OpcuaModelBuilder(
 
     //    @Deprecated("This should probably be handled in the future.")
     val ignoredForNow = Unit
-
-    class RichModelDesign(val fileName: String) : ModelDesign()
-
-    fun newModelDesign(designName: String): RichModelDesign {
-        return RichModelDesign("$outputFolder/$designName.Model.xml").apply {
+    
+    fun newModelDesign(designName: String): ModelDesign {
+        return ModelDesign().apply {
             targetNamespace = rootNamespace
 
             namespaces = NamespaceTable().apply {
